@@ -1,81 +1,64 @@
-# Windows Go 版 Social Stream Ninja + DeepSeek 翻译 Overlay
+# Social Stream Ninja + DeepSeek Overlay（Go）
 
-当前推荐使用 Go 版本：`main.go`。
+这是一个面向 Windows 的 Go 应用：连接 Social Stream Ninja Twitch Chat，将英文聊天发送到 DeepSeek 翻译为简体中文，并通过 OBS Browser Source 显示。
 
-## 编译 Windows EXE
+## 目录结构
 
-在已安装 Go 1.22 或更高版本的环境中运行：
-
-```bash
-go mod tidy
-go build -trimpath -ldflags="-s -w" -o socialstream-overlay.exe .
+```text
+cmd/socialstream-overlay/      程序入口
+internal/config/               配置加载、保存和校验
+internal/stream/               Social Stream Ninja WebSocket、消息广播和清屏
+internal/translation/          DeepSeek 翻译和缓存
+internal/web/                  HTTP API、Overlay、Settings、嵌入式静态资源
 ```
 
-交叉编译 Windows x64：
+前端资源使用 Go `embed` 编译进 EXE，不需要 Node.js、npm 或外部静态文件。
+
+## 编译 Windows x64
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o socialstream-overlay.exe .
+gofmt -w cmd internal
+go test ./...
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o socialstream-overlay.exe ./cmd/socialstream-overlay
 ```
-
-当前目录已经生成了 `socialstream-overlay.exe`。
 
 ## 使用
 
 1. 双击 `socialstream-overlay.exe`。
 2. 打开 `http://127.0.0.1:3000/settings`。
-3. 填写 Social Stream Ninja 的 Session ID。
-4. 填写 DeepSeek API Key。
-5. 点击“保存设置”。
-6. 点击“测试 DeepSeek”确认 API 可用。
-7. 把页面显示的 Overlay URL 添加到 OBS Browser Source。
+3. 填写 Social Stream Ninja Session ID 和 DeepSeek API Key。
+4. 点击保存。
+5. 把 settings 页面生成的地址加入 OBS Browser Source。
 
-默认 Overlay 地址格式：
+Overlay 直接使用：
 
 ```text
-http://127.0.0.1:3000/?session=你的SESSION_ID&noavatar
+wss://io.socialstream.ninja/join/SESSION_ID/4
 ```
 
-配置页面支持：
+显示观看人数：
 
-- Session ID
-- DeepSeek API Key
-- DeepSeek 模型
-- 翻译超时时间
-- 原文显示/隐藏
-- 头像显示/隐藏
-- 最大聊天消息数量
-- 自动连接 Social Stream Ninja
+```text
+http://127.0.0.1:3000/?session=SESSION_ID&viewers
+```
 
-## 配置文件和安全
+## 一键清屏
 
-配置保存在 Windows 用户配置目录：
+settings 页面提供“清除当前 Overlay 所有消息”按钮。它调用：
+
+```text
+POST /api/clear
+```
+
+服务端通过本地 WebSocket Hub 广播清屏事件，所有打开的 Overlay 会立即清除当前 Chat 和事件。
+
+## 配置和安全
+
+Windows 配置位置：
 
 ```text
 %AppData%\SocialStreamDeepSeekOverlay\config.json
 %AppData%\SocialStreamDeepSeekOverlay\deepseek.key
 ```
 
-API Key 单独保存于 `deepseek.key`，不会通过 `/api/config` 返回，也不会注入 Overlay 页面。
-
-## Social Stream Ninja
-
-在 Social Stream Ninja 的全局设置 → Mechanics 中开启：
-
-1. `Enable remote API control of extension`
-2. `Send chat messages to API server`
-
-Go 程序会自动连接：
-
-```text
-wss://io.socialstream.ninja:443
-```
-
-并监听 channel 4 的聊天消息。
-
-## 注意
-
-- 程序默认监听 `0.0.0.0:3000`，允许同一局域网设备访问。
-- 在 Windows 防火墙弹窗中选择允许专用网络访问；不要在公共网络开放。
-- 修改 Session ID 或自动连接设置后，建议重启程序。
-- 中文消息不会调用 DeepSeek；英文消息才会翻译。
-- 编译出来的 EXE 可以直接复制到 Windows 使用，不需要安装 Node.js。
+DeepSeek API Key 单独保存，不会写入普通配置 JSON，也不会注入 Overlay。

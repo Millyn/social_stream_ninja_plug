@@ -1,4 +1,5 @@
+socialstream-overlay.exe
 node_modules/
 .env
+.env.*
 .DS_Store
-socialstream-overlay.exe
