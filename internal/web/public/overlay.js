@@ -5,6 +5,13 @@
   const chinese = x => /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(x);
   const english = x => (x.match(/[A-Za-z]/g) || []).length >= 2 && !chinese(x);
   const rgba = (hex, opacity) => { let h = String(hex || '#000').replace('#',''); if(h.length===3) h=h.split('').map(x=>x+x).join(''); const n=parseInt(h.slice(0,6),16); if(Number.isNaN(n)) return 'rgba(0,0,0,0)'; return `rgba(${n>>16&255},${n>>8&255},${n&255},${Math.max(0,Math.min(100,Number(opacity)))/100})`; };
+  function safeImageSource(src) {
+    const value = String(src || '').trim();
+    if (!value) return '';
+    if (/^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(value)) return value.replace(/\s+/g, '');
+    if (/^blob:/i.test(value)) return value;
+    try { const url = new URL(value, location.href); return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''; } catch { return ''; }
+  }
 
   // Social Stream Ninja sends emotes as HTML, commonly as <img> tags. Never
   // assign that HTML to innerHTML directly: copy only safe text, <br>, and
@@ -20,15 +27,13 @@
       if (tag === 'br') return document.createElement('br');
       if (tag === 'img') {
         const src = node.getAttribute('src') || node.getAttribute('data-src') || '';
-        try {
-          const url = new URL(src, location.href);
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-          const image = document.createElement('img'); image.src = url.href; image.alt = node.getAttribute('alt') || ''; image.title = node.getAttribute('title') || '';
-          const width = Number(node.getAttribute('width')), height = Number(node.getAttribute('height'));
-          if (Number.isFinite(width) && width > 0 && width <= 256) image.width = width;
-          if (Number.isFinite(height) && height > 0 && height <= 256) image.height = height;
-          return image;
-        } catch { return null; }
+        const imageSrc = safeImageSource(src);
+        if (!imageSrc) return null;
+        const image = document.createElement('img'); image.src = imageSrc; image.alt = node.getAttribute('alt') || ''; image.title = node.getAttribute('title') || '';
+        const width = Number(node.getAttribute('width')), height = Number(node.getAttribute('height'));
+        if (Number.isFinite(width) && width > 0 && width <= 256) image.width = width;
+        if (Number.isFinite(height) && height > 0 && height <= 256) image.height = height;
+        return image;
       }
       const wrapper = document.createDocumentFragment();
       node.childNodes.forEach(child => { const safe = copy(child); if (safe) wrapper.append(safe); });
