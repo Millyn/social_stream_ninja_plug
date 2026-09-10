@@ -12,13 +12,21 @@
     if (/^blob:/i.test(value)) return value;
     try { const url = new URL(value, location.href); return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''; } catch { return ''; }
   }
+  function decodeMarkup(value) {
+    let decoded = rawText(value);
+    for (let i = 0; i < 2; i++) {
+      const entity = document.createElement('textarea'); entity.innerHTML = decoded;
+      const next = entity.value; if (next === decoded) break; decoded = next;
+    }
+    return decoded;
+  }
 
   // Social Stream Ninja sends emotes as HTML, commonly as <img> tags. Never
   // assign that HTML to innerHTML directly: copy only safe text, <br>, and
   // remote images so a chat message cannot inject scripts or event handlers.
   function parseRich(raw) {
     const template = document.createElement('template');
-    template.innerHTML = rawText(raw);
+    template.innerHTML = decodeMarkup(raw);
     const fragment = document.createDocumentFragment();
     const copy = node => {
       if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '');
@@ -26,7 +34,7 @@
       const tag = node.tagName.toLowerCase();
       if (tag === 'br') return document.createElement('br');
       if (tag === 'img') {
-        const src = node.getAttribute('src') || node.getAttribute('data-src') || '';
+        const src = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('data-url') || '';
         const imageSrc = safeImageSource(src);
         if (!imageSrc) return null;
         const image = document.createElement('img'); image.src = imageSrc; image.alt = node.getAttribute('alt') || ''; image.title = node.getAttribute('title') || '';
@@ -43,7 +51,7 @@
     return fragment;
   }
   function plainText(raw) {
-    const template = document.createElement('template'); template.innerHTML = rawText(raw);
+    const template = document.createElement('template'); template.innerHTML = decodeMarkup(raw);
     return (template.content.textContent || '').replace(/\s+/g, ' ').trim();
   }
   function renderRich(target, raw) { target.replaceChildren(parseRich(raw)); }
