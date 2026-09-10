@@ -1,48 +1,113 @@
 (() => {
-  const p = new URLSearchParams(location.search), output = document.querySelector('#output'), status = document.querySelector('#status'), viewer = document.querySelector('#viewer-count');
-  const session = p.get('session'), cfgPromise = fetch('/api/config').then(r => r.json()).catch(() => ({})); let cfg = {}, socket, control, reconnect, controlReconnect;
-  const rawText = x => String(x ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ');
-  const chinese = x => /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(x);
-  const english = x => (x.match(/[A-Za-z]/g) || []).length >= 2 && !chinese(x);
-  const rgba = (hex, opacity) => { let h = String(hex || '#000').replace('#',''); if(h.length===3) h=h.split('').map(x=>x+x).join(''); const n=parseInt(h.slice(0,6),16); if(Number.isNaN(n)) return 'rgba(0,0,0,0)'; return `rgba(${n>>16&255},${n>>8&255},${n&255},${Math.max(0,Math.min(100,Number(opacity)))/100})`; };
-  function safeImageSource(src) {
-    const value = String(src || '').trim();
-    if (!value) return '';
-    if (/^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(value)) return value.replace(/\s+/g, '');
-    if (/^blob:/i.test(value)) return value;
-    try { const url = new URL(value, location.href); return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''; } catch { return ''; }
-  }
+  const params = new URLSearchParams(location.search);
+  const output = document.querySelector('#output');
+  const status = document.querySelector('#status');
+  const viewer = document.querySelector('#viewer-count');
+  const session = params.get('session');
+  const configPromise = fetch('/api/config').then(response => response.json()).catch(() => ({}));
+  let socket;
+  let control;
+  let reconnectTimer;
+  let controlReconnectTimer;
+  let showOriginal = true;
+  let showAvatar = false;
+  let showViewers = false;
+  let maxMessages = 30;
+
+  const rawText = value => String(value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ');
+  const containsChinese = value => /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(value);
+  const looksEnglish = value => (value.match(/[A-Za-z]/g) || []).length >= 2 && !containsChinese(value);
+
   function decodeMarkup(value) {
     let decoded = rawText(value);
-    for (let i = 0; i < 2; i++) {
-      const entity = document.createElement('textarea'); entity.innerHTML = decoded;
-      const next = entity.value; if (next === decoded) break; decoded = next;
+    for (let i = 0; i < 2; i += 1) {
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = decoded;
+      const next = textarea.value;
+      if (next === decoded) break;
+      decoded = next;
     }
     return decoded;
   }
 
-  // Social Stream Ninja sends emotes as HTML, commonly as <img> tags. Never
-  // assign that HTML to innerHTML directly: copy only safe text, <br>, and
-  // remote images so a chat message cannot inject scripts or event handlers.
-  function parseRich(raw) {
+  function rgba(hex, opacity) {
+    let value = String(hex || '#000').replace('#', '');
+    if (value.length === 3) value = value.split('').map(char => char + char).join('');
+    const number = parseInt(value.slice(0, 6), 16);
+    if (Number.isNaN(number)) return 'rgba(0,0,0,0)';
+    const alpha = Math.max(0, Math.min(100, Number(opacity))) / 100;
+    return `rgba(${number >> 16 & 255},${number >> 8 & 255},${number & 255},${alpha})`;
+  }
+
+  function safeImageSource(source) {
+    const value = String(source || '').trim();
+    if (!value) return '';
+    if (/^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml);base64,[a-z0-9+/=_\-\s]+$/i.test(value)) return value.replace(/\s+/g, '');
+    if (/^blob:/i.test(value)) return value;
+    try {
+      const url = new URL(value, location.href);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function srcsetSources(srcset) {
+    return String(srcset || '').split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
+  }
+
+  function imageCandidates(source, srcset) {
+    const sources = [...srcsetSources(srcset), source].map(safeImageSource).filter(Boolean);
+    const result = [];
+    const add = value => { if (value && !result.includes(value)) result.push(value); };
+    sources.forEach(add);
+    sources.forEach(value => {
+      const match = value.match(/^(https:\/\/cdn\.7tv\.app\/emote\/[^/]+\/)/i);
+      if (!match) return;
+      const base = match[1];
+      ['4x.webp', '3x.webp', '2x.webp', '1x.webp', '4x.avif', '3x.avif', '2x.avif', '1x.avif', '4x.gif', '3x.gif', '2x.gif', '1x.gif', '4x.png', '3x.png', '2x.png', '1x.png'].forEach(size => add(base + size));
+    });
+    return result;
+  }
+
+  function createEmoteImage(node) {
+    const source = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('data-url') || '';
+    const emoteId = node.getAttribute('data-emote-id') || node.getAttribute('data-emote') || node.getAttribute('data-id') || '';
+    const candidates = imageCandidates(source || (emoteId ? `https://cdn.7tv.app/emote/${emoteId}/` : ''), node.getAttribute('srcset') || node.getAttribute('data-srcset'));
+    if (!candidates.length) return null;
+    const image = document.createElement('img');
+    image.alt = node.getAttribute('alt') || '';
+    image.title = node.getAttribute('title') || image.alt;
+    image.dataset.candidates = JSON.stringify(candidates);
+    image.dataset.candidateIndex = '0';
+    image.src = candidates[0];
+    image.addEventListener('error', () => {
+      const list = JSON.parse(image.dataset.candidates || '[]');
+      const next = Number(image.dataset.candidateIndex || 0) + 1;
+      if (next < list.length) {
+        image.dataset.candidateIndex = String(next);
+        image.src = list[next];
+      } else {
+        image.remove();
+      }
+    });
+    const width = Number(node.getAttribute('width'));
+    const height = Number(node.getAttribute('height'));
+    if (Number.isFinite(width) && width > 0 && width <= 256) image.width = width;
+    if (Number.isFinite(height) && height > 0 && height <= 256) image.height = height;
+    return image;
+  }
+
+  function parseRich(value) {
     const template = document.createElement('template');
-    template.innerHTML = decodeMarkup(raw);
+    template.innerHTML = decodeMarkup(value);
     const fragment = document.createDocumentFragment();
     const copy = node => {
       if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '');
       if (node.nodeType !== Node.ELEMENT_NODE) return null;
       const tag = node.tagName.toLowerCase();
       if (tag === 'br') return document.createElement('br');
-      if (tag === 'img') {
-        const src = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('data-url') || '';
-        const imageSrc = safeImageSource(src);
-        if (!imageSrc) return null;
-        const image = document.createElement('img'); image.src = imageSrc; image.alt = node.getAttribute('alt') || ''; image.title = node.getAttribute('title') || '';
-        const width = Number(node.getAttribute('width')), height = Number(node.getAttribute('height'));
-        if (Number.isFinite(width) && width > 0 && width <= 256) image.width = width;
-        if (Number.isFinite(height) && height > 0 && height <= 256) image.height = height;
-        return image;
-      }
+      if (tag === 'img') return createEmoteImage(node);
       const wrapper = document.createDocumentFragment();
       node.childNodes.forEach(child => { const safe = copy(child); if (safe) wrapper.append(safe); });
       return wrapper;
@@ -50,17 +115,123 @@
     template.content.childNodes.forEach(node => { const safe = copy(node); if (safe) fragment.append(safe); });
     return fragment;
   }
-  function plainText(raw) {
-    const template = document.createElement('template'); template.innerHTML = decodeMarkup(raw);
+
+  function plainText(value) {
+    const template = document.createElement('template');
+    template.innerHTML = decodeMarkup(value);
     return (template.content.textContent || '').replace(/\s+/g, ' ').trim();
   }
-  function renderRich(target, raw) { target.replaceChildren(parseRich(raw)); }
-  function applyStyle(s) { const root=document.documentElement; [['font-size',(s.font_size||16)+'px'],['name-size',(s.name_size||16)+'px'],['source-size',(s.source_size||11)+'px'],['translation-size',(s.translation_size||15)+'px'],['text-color',s.text_color||'#fff'],['name-color',s.name_color||'#ddd'],['source-color',s.source_color||'#aaa'],['translation-color',s.translation_color||'#ffe98a'],['bubble-color',rgba(s.bubble_color,s.bubble_opacity??35)],['border-color',rgba(s.border_color||'#000',s.border_opacity??0)],['border-width',(s.border_width||0)+'px'],['border-radius',(s.border_radius??5)+'px'],['bubble-padding',(s.bubble_padding??5)+'px'],['message-gap',(s.message_gap??7)+'px'],['viewer-color',s.viewer_count_color||'#aaa']].forEach(([k,v])=>root.style.setProperty('--'+k,v)); if(!s.shadow)root.style.setProperty('--shadow','none'); }
-  function clear() { output.replaceChildren(); }
-  async function translate(original, target) { if(!english(original)) { target.remove(); return; } try { const r=await fetch('/api/translate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:original})}),j=await r.json(); if(!r.ok)throw Error(j.error||'翻译失败'); if(j.skipped||!j.translated){target.remove();return} target.textContent=j.translated;target.classList.remove('pending'); } catch(e) { target.textContent='翻译失败';target.title=e.message;target.classList.add('error'); } }
-  function add(d) { if(!d||typeof d!=='object')return; if(d.type==='clear'||d.action==='clear'){clear();return} const message=rawText(d.chatmessage), name=plainText(d.chatname||d.name), event=rawText(d.event), messageText=plainText(message); if(!messageText&&!event&&!name&&!message)return; const count=Number(d.viewer_count??d.viewerCount??d.viewers??d.meta?.viewer_count??d.meta?.viewerCount); if(Number.isFinite(count)&&showViewers){viewer.textContent='👁 '+Math.max(0,Math.round(count)).toLocaleString('zh-CN');viewer.classList.add('visible');return;} const row=document.createElement('article');row.className='message';const bubble=document.createElement('div');bubble.className='bubble';const head=document.createElement('div');const nameEl=document.createElement('span');nameEl.className='name';nameEl.textContent=name||'Social Stream';head.append(nameEl);if(d.type){const src=document.createElement('span');src.className='source';src.textContent=`[${d.type}]`;head.append(src)}bubble.append(head);if(event&&!messageText){const e=document.createElement('div');e.className='event';renderRich(e,event);bubble.append(e)}if(message){const o=document.createElement('span');o.className='original';renderRich(o,message);o.hidden=!showOriginal;bubble.append(o);const t=document.createElement('span');t.className='translation pending';t.textContent='翻译中…';bubble.append(t);translate(messageText,t)}if(d.chatimg&&showAvatar){const img=document.createElement('img');img.className='avatar';img.src=d.chatimg;img.alt='';img.onerror=()=>img.remove();row.append(img)}row.append(bubble);output.append(row);while(output.querySelectorAll('.message').length>max)output.querySelector('.message')?.remove();}
-  let showOriginal=true,showAvatar=false,showViewers=false,max=30;
-  function connectControl(){const protocol=location.protocol==='https:'?'wss':'ws';control=new WebSocket(`${protocol}://${location.host}/ws`);control.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.type==='clear'||d.action==='clear')clear()}catch{}};control.onclose=()=>{clearTimeout(controlReconnect);controlReconnect=setTimeout(connectControl,3000)};}
-  async function start(){ cfg=await cfgPromise; const s=cfg.style||{}; showOriginal=p.has('original')?!p.has('nooriginal'):!!cfg.show_original;showAvatar=p.has('avatar')?!p.has('noavatar'):!!s.show_avatar;showViewers=p.has('viewers')||p.has('showviewers')||p.has('showviewercount')?!p.has('noviewers'):!!s.show_viewer_count;max=Number(p.get('limit')||cfg.max_messages||30);applyStyle(s);connectControl();if(!session){status.textContent='缺少 session 参数';return}status.textContent='连接中…';socket=new WebSocket('wss://io.socialstream.ninja/join/'+encodeURIComponent(session)+'/4');socket.onopen=()=>{status.textContent='已连接'};socket.onmessage=e=>{try{let d=JSON.parse(e.data);for(let i=0;i<3&&d&&typeof d==='object';i++){if(typeof d.value==='string'){try{d=JSON.parse(d.value);continue}catch{}}if(d.data&&typeof d.data==='object'&&!d.chatmessage&&!d.event){d=d.data;continue}break}add(d)}catch{}};socket.onclose=()=>{status.textContent='连接断开，重连中…';clearTimeout(reconnect);reconnect=setTimeout(start,3000)};}
+
+  function renderRich(target, value) { target.replaceChildren(parseRich(value)); }
+
+  function numberValue(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+    return null;
+  }
+  function viewerCount(data) {
+    const direct = [data.viewer_count, data.viewerCount, data.viewers, data.viewers_count, data.viewer_count_total, data.counterValue, data.totalViewers, data.viewerCountTotal];
+    for (const value of direct) { const number = numberValue(value); if (number !== null) return number; }
+    const candidates = [data.meta, data.metadata, data.value, data.payload];
+    for (const candidate of candidates) {
+      const number = numberValue(candidate); if (number !== null) return number;
+      if (candidate && typeof candidate === 'object') {
+        for (const key of ['viewer_count', 'viewerCount', 'viewers', 'viewers_count', 'count', 'total', 'totalViewers']) {
+          const nested = numberValue(candidate[key]); if (nested !== null) return nested;
+        }
+      }
+    }
+    return null;
+  }
+
+  function applyStyle(style) {
+    const root = document.documentElement;
+    const values = [
+      ['font-size', `${style.font_size || 16}px`], ['name-size', `${style.name_size || 16}px`],
+      ['source-size', `${style.source_size || 11}px`], ['translation-size', `${style.translation_size || 15}px`],
+      ['text-color', style.text_color || '#fff'], ['name-color', style.name_color || '#ddd'],
+      ['source-color', style.source_color || '#aaa'], ['translation-color', style.translation_color || '#ffe98a'],
+      ['bubble-color', rgba(style.bubble_color, style.bubble_opacity ?? 35)],
+      ['border-color', rgba(style.border_color || '#000', style.border_opacity ?? 0)],
+      ['border-width', `${style.border_width || 0}px`], ['border-radius', `${style.border_radius ?? 5}px`],
+      ['bubble-padding', `${style.bubble_padding ?? 5}px`], ['message-gap', `${style.message_gap ?? 7}px`],
+      ['viewer-color', style.viewer_count_color || '#aaa']
+    ];
+    values.forEach(([name, value]) => root.style.setProperty(`--${name}`, value));
+    if (!style.shadow) root.style.setProperty('--shadow', 'none');
+  }
+
+  function clearMessages() { output.replaceChildren(); }
+
+  async function translate(original, target) {
+    if (!looksEnglish(original)) { target.remove(); return; }
+    try {
+      const response = await fetch('/api/translate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: original }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '翻译失败');
+      if (result.skipped || !result.translated) { target.remove(); return; }
+      target.textContent = result.translated;
+      target.classList.remove('pending');
+    } catch (error) {
+      target.textContent = '翻译失败'; target.title = error.message; target.classList.add('error');
+    }
+  }
+
+  function addMessage(data) {
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'clear' || data.action === 'clear') { clearMessages(); return; }
+    const count = viewerCount(data);
+    if (Number.isFinite(count) && showViewers) { viewer.textContent = `👁 ${Math.max(0, Math.round(count)).toLocaleString('zh-CN')}`; viewer.classList.add('visible'); return; }
+    const message = rawText(data.chatmessage);
+    const messageText = plainText(message);
+    const name = plainText(data.chatname || data.name);
+    const event = rawText(data.event);
+    if (!message && !event && !name && !data.contentimg) return;
+    const row = document.createElement('article'); row.className = 'message';
+    const bubble = document.createElement('div'); bubble.className = 'bubble';
+    const header = document.createElement('div');
+    const nameNode = document.createElement('span'); nameNode.className = 'name'; nameNode.textContent = name || 'Social Stream'; header.append(nameNode);
+    if (data.type) { const source = document.createElement('span'); source.className = 'source'; source.textContent = `[${data.type}]`; header.append(source); }
+    bubble.append(header);
+    if (event && !messageText) { const eventNode = document.createElement('div'); eventNode.className = 'event'; renderRich(eventNode, event); bubble.append(eventNode); }
+    if (message) { const original = document.createElement('span'); original.className = 'original'; renderRich(original, message); original.hidden = !showOriginal; bubble.append(original); const translation = document.createElement('span'); translation.className = 'translation pending'; translation.textContent = '翻译中…'; bubble.append(translation); translate(messageText, translation); }
+    if (data.contentimg) { const mediaSrc = safeImageSource(data.contentimg); if (mediaSrc) { const media = document.createElement('img'); media.className = 'content-image'; media.src = mediaSrc; media.alt = ''; media.onerror = () => media.remove(); bubble.append(media); } }
+    if (data.chatimg && showAvatar) { const avatarSrc = safeImageSource(data.chatimg); if (avatarSrc) { const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = avatarSrc; avatar.alt = ''; avatar.onerror = () => avatar.remove(); row.append(avatar); } }
+    row.append(bubble); output.append(row);
+    while (output.querySelectorAll('.message').length > maxMessages) output.querySelector('.message')?.remove();
+  }
+
+  function connectControl() {
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    control = new WebSocket(`${protocol}://${location.host}/ws?session=${encodeURIComponent(session || '')}`);
+    control.onmessage = event => { try { const data = JSON.parse(event.data); if (data.type === 'clear' || data.action === 'clear') clearMessages(); } catch {} };
+    control.onclose = () => { clearTimeout(controlReconnectTimer); controlReconnectTimer = setTimeout(connectControl, 3000); };
+  }
+  async function start() {
+    const config = await configPromise;
+    const style = config.style || {};
+    showOriginal = params.has('original') ? !params.has('nooriginal') : !!config.show_original;
+    showAvatar = params.has('avatar') ? !params.has('noavatar') : !!style.show_avatar;
+    showViewers = params.has('viewers') || params.has('showviewers') || params.has('showviewercount') ? !params.has('noviewers') : !!style.show_viewer_count;
+    maxMessages = Number(params.get('limit') || config.max_messages || 30);
+    applyStyle(style); connectControl();
+    if (!session) { status.textContent = '缺少 session 参数'; return; }
+    status.textContent = '连接中…';
+    socket = new WebSocket(`wss://io.socialstream.ninja/join/${encodeURIComponent(session)}/4`);
+    socket.onopen = () => { status.textContent = '已连接'; };
+    socket.onmessage = event => {
+      try {
+        let data = JSON.parse(event.data);
+        for (let i = 0; i < 3 && data && typeof data === 'object'; i += 1) {
+          if (typeof data.value === 'string') { try { data = JSON.parse(data.value); continue; } catch {} }
+          if (data.data && typeof data.data === 'object' && !data.chatmessage && !data.event) { data = data.data; continue; }
+          break;
+        }
+        addMessage(data);
+      } catch {}
+    };
+    socket.onclose = () => { status.textContent = '连接断开，重连中…'; clearTimeout(reconnectTimer); reconnectTimer = setTimeout(start, 3000); };
+  }
+
   start();
 })();
