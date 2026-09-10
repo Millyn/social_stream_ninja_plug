@@ -141,7 +141,7 @@
     for (const candidate of candidates) {
       const number = numberValue(candidate); if (number !== null) return number;
       if (candidate && typeof candidate === 'object') {
-        for (const key of ['viewer_count', 'viewerCount', 'viewers', 'viewers_count', 'count', 'total', 'totalViewers']) {
+        for (const key of ['viewer_count', 'viewerCount', 'viewers', 'viewers_count', 'count', 'total', 'totalViewers', 'twitch', 'youtube', 'kick', 'facebook', 'tiktok']) {
           const nested = numberValue(candidate[key]); if (nested !== null) return nested;
         }
       }
@@ -186,9 +186,10 @@
     if (!data || typeof data !== 'object') return;
     if (data.type === 'clear' || data.action === 'clear') { clearMessages(); return; }
     const count = viewerCount(data);
+    const isViewerEvent = data.event === 'viewer_update' || data.event === 'viewer_update_total' || data.event === 'viewer_updates' || data.type === 'viewer_update' || data.type === 'viewer_update_total' || data.type === 'viewer_updates';
     if (Number.isFinite(count)) {
-      if (showViewers) { viewer.textContent = `👁 ${Math.max(0, Math.round(count)).toLocaleString('zh-CN')}`; viewer.classList.add('visible'); }
-      if (data.event === 'viewer_update' || data.event === 'viewer_update_total' || data.type === 'viewer_update' || data.type === 'viewer_update_total') return;
+      if (showViewers || isViewerEvent) { viewer.textContent = `👁 ${Math.max(0, Math.round(count)).toLocaleString('zh-CN')}`; viewer.classList.add('visible'); }
+      if (isViewerEvent) return;
     }
     const message = rawText(data.chatmessage);
     const messageText = plainText(message);
