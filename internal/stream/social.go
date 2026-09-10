@@ -92,15 +92,19 @@ func Normalize(raw []byte) ([]byte, bool) {
 		break
 	}
 	if obj, ok := value.(map[string]any); ok {
-		for _, key := range []string{"viewer_count", "viewerCount", "viewers", "viewers_count", "viewer_count_total"} {
+		for _, key := range []string{"viewer_count", "viewerCount", "viewers", "viewers_count", "viewer_count_total", "counterValue", "totalViewers", "viewerCountTotal"} {
 			if n, ok := numberValue(obj[key]); ok {
 				obj["viewer_count"] = n
 				break
 			}
 		}
-		if nested, ok := obj["meta"].(map[string]any); ok {
-			for _, key := range []string{"viewer_count", "viewerCount", "viewers", "viewers_count"} {
-				if n, ok := numberValue(nested[key]); ok {
+		for _, containerKey := range []string{"meta", "metadata", "payload"} {
+			container, ok := obj[containerKey].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"viewer_count", "viewerCount", "viewers", "viewers_count", "count", "total", "totalViewers"} {
+				if n, ok := numberValue(container[key]); ok {
 					obj["viewer_count"] = n
 					break
 				}
@@ -122,10 +126,17 @@ func numberValue(value any) (int, bool) {
 	switch n := value.(type) {
 	case float64:
 		return int(n), true
+	case float32:
+		return int(n), true
 	case int:
 		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		i, e := strconv.Atoi(string(n))
+		return i, e == nil
 	case string:
-		i, e := strconv.Atoi(strings.TrimSpace(n))
+		i, e := strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(n, ",", "")))
 		return i, e == nil
 	}
 	return 0, false

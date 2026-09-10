@@ -126,7 +126,12 @@
 
   function numberValue(value) {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+    if (typeof value === 'string') {
+      const text = value.trim().replace(/,/g, '');
+      if (text !== '' && Number.isFinite(Number(text))) return Number(text);
+      const match = text.match(/-?\d+(?:\.\d+)?/);
+      if (match && Number.isFinite(Number(match[0]))) return Number(match[0]);
+    }
     return null;
   }
   function viewerCount(data) {
@@ -181,7 +186,10 @@
     if (!data || typeof data !== 'object') return;
     if (data.type === 'clear' || data.action === 'clear') { clearMessages(); return; }
     const count = viewerCount(data);
-    if (Number.isFinite(count) && showViewers) { viewer.textContent = `👁 ${Math.max(0, Math.round(count)).toLocaleString('zh-CN')}`; viewer.classList.add('visible'); return; }
+    if (Number.isFinite(count)) {
+      if (showViewers) { viewer.textContent = `👁 ${Math.max(0, Math.round(count)).toLocaleString('zh-CN')}`; viewer.classList.add('visible'); }
+      if (data.event === 'viewer_update' || data.event === 'viewer_update_total' || data.type === 'viewer_update' || data.type === 'viewer_update_total') return;
+    }
     const message = rawText(data.chatmessage);
     const messageText = plainText(message);
     const name = plainText(data.chatname || data.name);
@@ -212,9 +220,9 @@
     const style = config.style || {};
     showOriginal = params.has('original') ? !params.has('nooriginal') : !!config.show_original;
     showAvatar = params.has('avatar') ? !params.has('noavatar') : !!style.show_avatar;
-    showViewers = params.has('viewers') || params.has('showviewers') || params.has('showviewercount') ? !params.has('noviewers') : !!style.show_viewer_count;
+    showViewers = params.has('noviewers') ? false : (params.has('viewers') || params.has('showviewers') || params.has('showviewercount') || !!style.show_viewer_count);
     maxMessages = Number(params.get('limit') || config.max_messages || 30);
-    applyStyle(style); connectControl();
+    applyStyle(style); if (showViewers) viewer.classList.add('visible'); connectControl();
     if (!session) { status.textContent = '缺少 session 参数'; return; }
     status.textContent = '连接中…';
     socket = new WebSocket(`wss://io.socialstream.ninja/join/${encodeURIComponent(session)}/4`);
